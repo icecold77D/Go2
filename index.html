@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <title>完整圍棋：玩家 vs AI</title>
+  <style>
+    canvas { background: burlywood; display: block; margin: auto; }
+    #info, #result {
+      text-align: center;
+      font-family: sans-serif;
+      margin-top: 10px;
+      font-size: 18px;
+    }
+    #controls { text-align: center; margin-top: 10px; }
+    button { font-size: 16px; margin: 5px; }
+  </style>
+</head>
+<body>
+<canvas id="board" width="770" height="770"></canvas>
+<div id="info">黑方回合</div>
+<div id="controls">
+  <button onclick="passTurn()">PASS</button>
+  <button onclick="resetGame()">重新開始</button>
+</div>
+<div id="result"></div>
+<script>
+const BOARD_SIZE = 19;
+const CELL_SIZE = 40;
+const MARGIN = 24;
+const BLACK = 1, WHITE = 2, EMPTY = 0;
+let komi = 6.5;
+
+let board, currentPlayer, previousBoard, passCount;
+
+const canvas = document.getElementById('board');
+const ctx = canvas.getContext('2d');
+const info = document.getElementById('info');
+const resultDiv = document.getElementById('result');
+
+function deepCopyBoard(b) {
+  return b.map(row => row.slice());
+}
+
+function resetGame() {
+  board = Array.from({ length: BOARD_SIZE }, () => Array(BOARD_SIZE).fill(EMPTY));
+  currentPlayer = BLACK;
+  previousBoard = null;
+  passCount = 0;
+  info.textContent = '黑方回合';
+  resultDiv.textContent = '';
+  drawBoard();
+}
+
+function drawBoard() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = 'burlywood';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  for (let i = 0; i < BOARD_SIZE; i++) {
+    const pos = MARGIN + i * CELL_SIZE;
+    ctx.beginPath();
+    ctx.moveTo(MARGIN, pos);
+    ctx.lineTo(MARGIN + (BOARD_SIZE - 1) * CELL_SIZE, pos);
+    ctx.moveTo(pos, MARGIN);
+    ctx.lineTo(pos, MARGIN + (BOARD_SIZE - 1) * CELL_SIZE);
+    ctx.stroke();
+  }
+
+  for (let y = 0; y < BOARD_SIZE; y++) {
+    for (let x = 0; x < BOARD_SIZE; x++) {
+      if (board[y][x] !== EMPTY) {
+        const cx = MARGIN + x * CELL_SIZE;
+        const cy = MARGIN + y * CELL_SIZE;
+        ctx.beginPath();
+        ctx.arc(cx, cy, CELL_SIZE * 0.45, 0, 2 * Math.PI);
+        ctx.fillStyle = board[y][x] === BLACK ? 'black' : 'white';
+        ctx.fill();
+        ctx.strokeStyle = 'black';
+        ctx.stroke();
+      }
+    }
+  }
+}
+
+function isLegal(x, y, color, testBoard) {
+  if (testBoard[y][x] !== EMPTY) return false;
+  testBoard[y][x] = color;
+  removeCaptured(testBoard, 3 - color);
+  const hasLiberty = checkLiberty(testBoard, x, y, color);
+  const boardStr = JSON.stringify(testBoard);
+  const previousStr = previousBoard ? JSON.stringify(previousBoard) : null;
+  testBoard[y][x] = EMPTY;
+  return hasLiberty && boardStr !== previousStr;
+}
+
+function checkLiberty(board, x, y, color, visited = new Set()) {
+  const key = `${x},${y}`;
+  if (visited.has(key)) return false;
+  visited.add(key);
+  for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+    const nx = x + dx, ny = y + dy;
+    if (nx < 0 || ny < 0 || nx >= BOARD_SIZE || ny >= BOARD_SIZE) continue;
+    if (board[ny][nx] === EMPTY) return true;
+    if (board[ny][nx] === color && checkLiberty(board, nx, ny, color, visited)) return true;
+  }
+  return false;
+}
+
+function removeCaptured(board, color) {
+  let removed = false;
+  const visited = new Set();
+  for (let y = 0; y < BOARD_SIZE; y++) {
+    for (let x = 0; x < BOARD_SIZE; x++) {
+      if (board[y][x] === color && !checkLiberty(board, x, y, color, new Set())) {
+        removeGroup(board, x, y, color, visited);
+        removed = true;
+      }
+    }
+  }
+  return removed;
+}
+
+function removeGroup(board, x, y, color, visited) {
+  const key = `${x},${y}`;
+  if (visited.has(key)) return;
+  visited.add(key);
+  if (board[y][x] !== color) return;
+  board[y][x] = EMPTY;
+  for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+    const nx = x + dx, ny = y + dy;
+    if (nx >= 0 && ny >= 0 && nx < BOARD_SIZE && ny < BOARD_SIZE) {
+      removeGroup(board, nx, ny, color, visited);
+    }
+  }
+}
+
+canvas.addEventListener('click', (e) => {
+  if (passCount >= 2) return;
+  const rect = canvas.getBoundingClientRect();
+  const x = Math.round((e.clientX - rect.left - MARGIN) / CELL_SIZE);
+  const y = Math.round((e.clientY - rect.top - MARGIN) / CELL_SIZE);
+  if (x >= 0 && x < BOARD_SIZE && y >= 0 && y < BOARD_SIZE && board[y][x] === EMPTY) {
+    const testBoard = deepCopyBoard(board);
+    if (isLegal(x, y, currentPlayer, testBoard)) {
+      previousBoard = deepCopyBoard(board);
+      board[y][x] = currentPlayer;
+      removeCaptured(board, 3 - currentPlayer);
+      currentPlayer = 3 - currentPlayer;
+      passCount = 0;
+      info.textContent = currentPlayer === BLACK ? '黑方回合' : '白方回合';
+      drawBoard();
+      setTimeout(aiMove, 300);
+    }
+  }
+});
+
+function aiMove() {
+  if (currentPlayer !== WHITE) return;
+  const moves = [];
+  for (let y = 0; y < BOARD_SIZE; y++) {
+    for (let x = 0; x < BOARD_SIZE; x++) {
+      const testBoard = deepCopyBoard(board);
+      if (isLegal(x, y, WHITE, testBoard)) {
+        moves.push([x, y]);
+      }
+    }
+  }
+  if (moves.length > 0) {
+    const [x, y] = moves[Math.floor(Math.random() * moves.length)];
+    previousBoard = deepCopyBoard(board);
+    board[y][x] = WHITE;
+    removeCaptured(board, BLACK);
+    currentPlayer = BLACK;
+    passCount = 0;
+    info.textContent = '黑方回合';
+    drawBoard();
+  } else {
+    passTurn();
+  }
+}
+
+function passTurn() {
+  passCount++;
+  currentPlayer = 3 - currentPlayer;
+  info.textContent = currentPlayer === BLACK ? '黑方回合' : '白方回合';
+  if (passCount >= 2) {
+    endGame();
+  } else if (currentPlayer === WHITE) {
+    setTimeout(aiMove, 300);
+  }
+}
+
+function countTerritory() {
+  let black = 0, white = 0;
+  const visited = new Set();
+  for (let y = 0; y < BOARD_SIZE; y++) {
+    for (let x = 0; x < BOARD_SIZE; x++) {
+      if (board[y][x] === EMPTY && !visited.has(`${x},${y}`)) {
+        const territory = [], neighborColors = new Set();
+        const stack = [[x, y]];
+        while (stack.length > 0) {
+          const [cx, cy] = stack.pop();
+          const key = `${cx},${cy}`;
+          if (visited.has(key)) continue;
+          visited.add(key);
+          territory.push([cx, cy]);
+          for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+            const nx = cx + dx, ny = cy + dy;
+            if (nx < 0 || ny < 0 || nx >= BOARD_SIZE || ny >= BOARD_SIZE) continue;
+            const value = board[ny][nx];
+            if (value === EMPTY && !visited.has(`${nx},${ny}`)) {
+              stack.push([nx, ny]);
+            } else if (value !== EMPTY) {
+              neighborColors.add(value);
+            }
+          }
+        }
+        if (neighborColors.size === 1) {
+          if (neighborColors.has(BLACK)) black += territory.length;
+          if (neighborColors.has(WHITE)) white += territory.length;
+        }
+      }
+    }
+  }
+  return { black, white };
+}
+
+function endGame() {
+  let blackStones = 0, whiteStones = 0;
+  for (let row of board) {
+    for (let cell of row) {
+      if (cell === BLACK) blackStones++;
+      if (cell === WHITE) whiteStones++;
+    }
+  }
+  const territory = countTerritory();
+  const blackScore = blackStones + territory.black;
+  const whiteScore = whiteStones + territory.white + komi;
+  resultDiv.textContent = `黑 ${blackScore} vs 白 ${whiteScore.toFixed(1)}${whiteScore > blackScore ? ' → 白勝！' : ' → 黑勝！'}`;
+}
+
+resetGame();
+</script>
+</body>
+</html>
